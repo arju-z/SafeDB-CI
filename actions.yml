@@ -1,4 +1,4 @@
-name: 'Hello World'
+name: 'SafeDB-CI'
 description: 'Greet someone and record time'
 
 inputs:
