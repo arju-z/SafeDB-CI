@@ -12,7 +12,7 @@ jobs:
     steps:
       - name: Hello world action step
         id: hello
-        uses: arju-z/SafeDB-CI@v5.1
+        uses: arju-z/SafeDB-CI@v5.2
 
         with:
           who_to_greet: 'Mona the Octocat'
