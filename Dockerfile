@@ -1,4 +1,5 @@
 FROM alpine:latest
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-ENTRYPOINT [ "entrypoint.sh" ]
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+WORKDIR /app
+ENTRYPOINT ["/app/entrypoint.sh"]  
