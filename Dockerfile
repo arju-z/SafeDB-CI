@@ -1,3 +1,3 @@
-FROM alphine:3.0
+FROM alphine:latest
 COPY entrypoint.sh /entrypoint.sh
 ENTRYPOINT [ "entrypoint.sh" ]
