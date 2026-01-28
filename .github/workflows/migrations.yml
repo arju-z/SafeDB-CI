@@ -1,0 +1,21 @@
+on: 
+  push:
+    branch:
+      - feature/wrapper
+  
+
+
+jobs:
+  safedb-ci-test:
+    runs-on: ubuntu-latest
+    name: A job to say hello
+    steps:
+      - name: Hello world action step
+        id: hello
+        uses: arju-z/SafeDB-CI@v5.3
+
+        with:
+          who_to_greet: 'Mona the Octocat'
+      # Use the output from the `hello` step
+      - name: Get the output time
+        run: echo "The time was ${{ steps.hello.outputs.time }}"

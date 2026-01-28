@@ -1,0 +1,18 @@
+name: 'SafeDB-CI'
+description: 'Greet someone and record time'
+
+inputs:
+  who_to_greet:
+    description: 'Who to greet'
+    required: true
+    default: 'World'
+
+outputs:
+  time:
+    description: 'Time greeted you'
+
+runs:
+  using: 'docker'
+  image: 'Dockerfile'
+  args:
+    - ${{ inputs.who-to-greet }}
