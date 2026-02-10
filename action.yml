@@ -2,7 +2,7 @@ name: 'SafeDB-CI'
 description: 'Greet someone and record time'
 
 inputs:
-  who_to_greet:
+  who-to-greet:
     description: 'Who to greet'
     required: true
     default: 'World'
