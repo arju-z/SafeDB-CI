@@ -30,7 +30,7 @@ def load_migrations(migration_dir : Path) -> List[Migration]:
     migrations : List[Migration] = []
 
     for entry in migration_dir.iterdir():
-        if not entry.isfile():
+        if not entry.is_file():
             continue
         if entry.suffix != ".sql":
             continue
@@ -39,7 +39,7 @@ def load_migrations(migration_dir : Path) -> List[Migration]:
         if not match:
             raise InvalidMigrationFilenameError(entry.name)
         
-        version = match.group[1]
+        version = int(match.group(1))
 
         migrations.append(
             Migration(
