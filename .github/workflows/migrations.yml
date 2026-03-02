@@ -1,21 +1,49 @@
-on: 
-  push:
-    branch:
-      - feature/wrapper
-  
+name: SafeDB-CI Migration Validation
 
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+      - "feature/**"
+  pull_request:
+    branches:
+      - main
 
 jobs:
-  safedb-ci-test:
-    runs-on: ubuntu-latest
-    name: A job to say hello
-    steps:
-      - name: Hello world action step
-        id: hello
-        uses: arju-z/SafeDB-CI@v5.3
 
+  # ---------------------------------------------------------------------------
+  # Validate against PostgreSQL (strict on main, warn-only on feature branches)
+  # ---------------------------------------------------------------------------
+  validate-postgres:
+    name: "Validate Migrations (PostgreSQL)"
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: safedb
+          POSTGRES_PASSWORD: safedbpass
+          POSTGRES_DB: safedb_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run SafeDB-CI (strict)
+        uses: arju-z/SafeDB-CI@v1
         with:
-          who_to_greet: 'Mona the Octocat'
-      # Use the output from the `hello` step
-      - name: Get the output time
-        run: echo "The time was ${{ steps.hello.outputs.time }}"
+          db_type: postgres
+          migrations_path: ./migrations
+          strict_mode: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
+          postgres_user: safedb
+          postgres_password: safedbpass
+          postgres_db: safedb_test
