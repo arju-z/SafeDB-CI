@@ -23,19 +23,19 @@ Most CI pipelines verify that migrations _run_. SafeDB-CI verifies that they are
 
 A migration that applies cleanly on an empty CI database can still:
 
-- **Drop production data** (`TRUNCATE`, `DROP TABLE`)
-- **Delete child rows silently** (`ON DELETE CASCADE` on wrong tables)
-- **Wipe tables** (`DELETE FROM` without a `WHERE`)
-- **Break relational integrity** (FK referencing a column with no `UNIQUE` constraint)
-- **Corrupt state in MySQL** (DDL auto-commits; a failed migration cannot roll back)
+- **Drop production data** — `TRUNCATE`, `DROP TABLE`
+- **Wipe tables** — `DELETE FROM` without a `WHERE`
+- **Delete child rows silently** — `ON DELETE CASCADE` on the wrong table
+- **Break relational integrity** — FK referencing a non-unique column
+- **Corrupt state in MySQL** — DDL auto-commits; a failed migration cannot roll back
 
-SafeDB-CI runs a 6-phase guardrail pipeline to catch these issues before your deploy button is pressed.
+SafeDB-CI runs a **6-phase guardrail pipeline** to catch these issues before your deploy button is pressed.
 
 ---
 
 ## The Pipeline
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────┐
 │ git push → GitHub Actions → SafeDB-CI │
 │ │
@@ -111,7 +111,7 @@ safedb validate \
 --mysql-password mypass \
 --mysql-database mydb
 
-# CI mode (reads from environment variables)
+# CI mode — reads credentials from environment variables
 export POSTGRES_USER=myuser
 export POSTGRES_PASSWORD=mypass
 export POSTGRES_DB=mydb
@@ -149,9 +149,10 @@ migrations/
 └── 004_create_orders.sql
 ```
 
-**Rules enforced:**
+Rules enforced:
+
 - Version numbers start at `001` and increment by exactly `1`
-- No gaps (`001, 002, 004` → error on 004)
+- No gaps — `001, 002, 004` fails on `004`
 - No duplicate version numbers
 - Any `.sql` file not matching the pattern is a hard error
 
@@ -159,7 +160,7 @@ migrations/
 
 ## Safety Rules
 
-SafeDB-CI scans SQL before execution using pattern matching. No SQL parser required — it detects _intent_.
+SafeDB-CI scans SQL text before execution. No SQL parser required — it detects *intent*.
 
 ### HIGH Severity — Always blocks (exit 1)
 
@@ -171,19 +172,19 @@ SafeDB-CI scans SQL before execution using pattern matching. No SQL parser requi
 | `ALTER TABLE … DROP` | Drops column without `COLUMN` keyword |
 | `DELETE FROM <t>` without `WHERE` | Full-table wipe |
 
-    ### MEDIUM Severity — Warning by default, blocks in `strict_mode`
+    ### MEDIUM Severity — Warning by default, blocks in strict mode
 
     | Pattern | Risk |
     |---|---|
-    | `CASCADE` on FK definition | Conditional child-row deletion; confirm blast radius |
+    | `CASCADE` on FK definition | Conditional child-row deletion — confirm blast radius |
     | `ALTER COLUMN TYPE` | May silently truncate data on cast |
-    | `SET NOT NULL` | Fails in prod if NULLs already exist |
+    | `SET NOT NULL` | Fails in prod if NULLs already exist in the column |
 
     ---
 
     ## Schema Structural Validation
 
-    After migrations execute, SafeDB-CI reads the database catalog (`information_schema`) and validates:
+    After migrations execute, SafeDB-CI reads `information_schema` and validates the resulting schema:
 
     | Check | Severity |
     |---|---|
@@ -207,20 +208,21 @@ SafeDB-CI scans SQL before execution using pattern matching. No SQL parser requi
     MEDIUM warnings → ❌ fail (exit 1)
     ```
 
-    **Recommended policy:** use `strict_mode: false` on feature branches (iterative development), `strict_mode: true` on
-    `main` (production deploy gate).
+    **Recommended policy:** `strict_mode: false` on feature branches, `strict_mode: true` on `main`.
 
     ---
 
     ## Database Notes
 
     ### PostgreSQL ✅
+
     DDL statements (`CREATE TABLE`, `ALTER TABLE`) are fully transactional. A failed migration is completely rolled back
-    — the database is left exactly as it was.
+    — the database is left exactly as it was before.
 
     ### MySQL ⚠️
+
     MySQL issues an implicit `COMMIT` before and after every DDL statement. **A failed migration cannot be fully rolled
-    back.** Any DDL that ran before the failure point is permanently committed.
+    back.** Any DDL that executed before the failure is permanently committed.
 
     **Mitigation:** Write exactly one DDL statement per migration file. Always use `ENGINE=InnoDB`.
 
@@ -228,7 +230,7 @@ SafeDB-CI scans SQL before execution using pattern matching. No SQL parser requi
 
     ## Environment Variables (CI Mode)
 
-    When `--ci` is active, credentials are read from environment variables. No CLI arguments needed.
+    When `--ci` is active, credentials are read from environment variables instead of CLI arguments.
 
     | Variable | Engine |
     |---|---|
@@ -255,7 +257,7 @@ SafeDB-CI scans SQL before execution using pattern matching. No SQL parser requi
     ## Local Development
 
     ```bash
-    # Clone
+    # Clone the repo
     git clone https://github.com/arju-z/SafeDB-CI.git
     cd SafeDB-CI
 
@@ -302,14 +304,11 @@ SafeDB-CI scans SQL before execution using pattern matching. No SQL parser requi
 
     ## Known Limitations
 
-    - **No production schema diff** — SafeDB-CI validates internal self-consistency only. It does not compare against a
-    production or baseline schema.
-    - **No data-level validation** — The CI database is always empty. Constraints that fail due to existing data (e.g.
-    `SET NOT NULL` on a column with NULLs) cannot be detected.
-    - **No detection of missing constraints** — If a developer forgot to add a FK or index, SafeDB-CI cannot know.
-    - **PostgreSQL: `public` schema only** — Multi-schema databases are not supported in v1.
-    - **Pattern-based safety** — The safety layer uses regex, not a SQL AST. Complex nested statements may not be
-    detected.
+    - **No production schema diff** — validates internal self-consistency only, not against a baseline
+    - **No data-level validation** — the CI database is always empty; runtime data constraints cannot be tested
+    - **No detection of missing constraints** — can't flag a forgotten FK or index
+    - **PostgreSQL: `public` schema only** — multi-schema databases not supported in v1
+    - **Pattern-based safety** — regex, not a SQL AST; complex nested statements may not be caught
 
     ---
 
@@ -317,9 +316,8 @@ SafeDB-CI scans SQL before execution using pattern matching. No SQL parser requi
 
     1. Fork the repository
     2. Create a feature branch: `git checkout -b feature/my-change`
-    3. Keep engine layer separation clean — adapters must not leak into the CLI, and the CLI must not contain business
-    logic
-    4. Add comments explaining _why_, not just _what_
+    3. Keep the engine layer separation clean — adapters must not leak into CLI, CLI must not contain business logic
+    4. Add comments explaining *why*, not just *what*
     5. Submit a pull request against `main`
 
     All pull requests are validated by SafeDB-CI itself.
