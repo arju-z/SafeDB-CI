@@ -22,10 +22,11 @@ class MySQLAdapter(DatabaseAdapter):
 
             for migration in migrations:
                 try:
-                    sql_text = migration.path.read_text(
-                        encoding="utf-8"
-                    )
-                    cursor.execute(sql_text)
+                    sql_text = migration.path.read_text(encoding="utf-8")
+                    for statement in sql_text.split(";"):
+                        statement = statement.strip()
+                        if statement:
+                            cursor.execute(statement)
                     conn.commit()
 
                 except Exception as e:
