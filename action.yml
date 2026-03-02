@@ -1,18 +1,142 @@
-name: 'SafeDB-CI'
-description: 'Greet someone and record time'
+# action.yml — SafeDB-CI Composite GitHub Action
+#
+# WHY COMPOSITE (not Docker):
+# A Docker action requires pulling a pre-built image on every run plus
+# managing an image registry. Composite actions run directly on the
+# workflow runner, using the runners own Python environment. This gives us:
+#   - No image registry management.
+#   - Python environment pinned per run, no stale layers.
+#   - DB service containers remain in the workflow YAML where they belong.
+#   - No Docker-in-Docker requirement (a security anti-pattern).
+#
+# WHY DB LIFECYCLE STAYS IN THE WORKFLOW:
+# Service containers in GitHub Actions are managed by the GitHub runner's
+# Docker daemon — not by our Python process. The correct boundary is:
+# workflow manages containers, our action validates against whatever
+# is live at 127.0.0.1 when the validation step executes.
 
+name: "SafeDB-CI"
+description: >
+  Validates SQL migration files before production deploy.
+  Runs ordering, safety analysis, execution, and structural schema
+  integrity checks against an ephemeral database service container.
+
+author: "SafeDB-CI Contributors"
+
+branding:
+  icon: "shield"
+  color: "blue"
+
+# ---------------------------------------------------------------------------
+# INPUTS
+# ---------------------------------------------------------------------------
 inputs:
-  who_to_greet:
-    description: 'Who to greet'
+  db_type:
+    description: "Target database engine: 'postgres' or 'mysql'."
     required: true
-    default: 'World'
 
-outputs:
-  time:
-    description: 'Time greeted you'
+  migrations_path:
+    description: "Relative path to the SQL migration files directory."
+    required: true
+    default: "./migrations"
 
+  strict_mode:
+    description: >
+      When 'true', MEDIUM severity schema anomalies (missing PK, duplicate FK)
+      are treated as hard failures (exit 1). Default: 'false' (warnings only).
+    required: false
+    default: "false"
+
+  # ── PostgreSQL credentials ────────────────────────────────────────────────
+  postgres_user:
+    description: "PostgreSQL username. Must match the service container POSTGRES_USER."
+    required: false
+    default: ""
+
+  postgres_password:
+    description: "PostgreSQL password. Always pass via GitHub Secrets — never hardcode."
+    required: false
+    default: ""
+
+  postgres_db:
+    description: "PostgreSQL database name."
+    required: false
+    default: ""
+
+  # ── MySQL credentials ─────────────────────────────────────────────────────
+  mysql_user:
+    description: "MySQL username. Must match the service container MYSQL_USER."
+    required: false
+    default: ""
+
+  mysql_password:
+    description: "MySQL password. Always pass via GitHub Secrets — never hardcode."
+    required: false
+    default: ""
+
+  mysql_database:
+    description: "MySQL database name. Must match the service container MYSQL_DATABASE."
+    required: false
+    default: ""
+
+# ---------------------------------------------------------------------------
+# RUNS — Composite steps.
+# Logic lives entirely in the Python CLI. This action is a transparent wrapper.
+# ---------------------------------------------------------------------------
 runs:
-  using: 'docker'
-  image: 'Dockerfile'
-  args:
-    - ${{ inputs.who-to-greet }}
+  using: "composite"
+  steps:
+
+    # STEP 1: Set up Python.
+    # WHY PIN 3.11 (not 3.x): Pinning a major version means we get security
+    # patch releases automatically, but are protected from silent breaking
+    # changes in new minor releases that may change stdlib or typing behaviour.
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+
+    # STEP 2: Install SafeDB-CI from the action source directory.
+    # WHY --editable: The action runs from the checked-out repository.
+    # Editable install resolves imports against the live source tree,
+    # guaranteeing the action runs the exact commit SHA being validated.
+    # WHY --quiet: Keep CI logs focused on migration output, not pip noise.
+    - name: Install SafeDB-CI
+      shell: bash
+      run: pip install --quiet --editable "${{ github.action_path }}"
+
+    # STEP 3: Resolve strict mode to a CLI flag via GITHUB_ENV.
+    # WHY NOT INLINE IN THE NEXT STEP: action inputs are strings.
+    # We cannot conditionally pass a boolean flag inline without eval tricks.
+    # Resolving to an env var first is explicit, auditable, and safe.
+    - name: Resolve strict mode flag
+      shell: bash
+      run: |
+        if [ "${{ inputs.strict_mode }}" = "true" ]; then
+          echo "SAFEDB_STRICT_FLAG=--strict" >> "$GITHUB_ENV"
+        else
+          echo "SAFEDB_STRICT_FLAG=" >> "$GITHUB_ENV"
+        fi
+
+    # STEP 4: Execute SafeDB-CI validation.
+    # WHY ENV VARS FOR CREDENTIALS (not CLI args):
+    #   - CLI args appear in `ps aux` output, visible to co-tenant processes.
+    #   - GitHub Secrets injected via `env:` are masked in log output.
+    #   - Env vars align with 12-factor app configuration principles.
+    # WHY --ci FLAG: Instructs CLI to read credentials from environment
+    # instead of requiring explicit --postgres-user / --mysql-user flags.
+    - name: Run SafeDB-CI
+      shell: bash
+      env:
+        POSTGRES_USER: ${{ inputs.postgres_user }}
+        POSTGRES_PASSWORD: ${{ inputs.postgres_password }}
+        POSTGRES_DB: ${{ inputs.postgres_db }}
+        MYSQL_USER: ${{ inputs.mysql_user }}
+        MYSQL_PASSWORD: ${{ inputs.mysql_password }}
+        MYSQL_DATABASE: ${{ inputs.mysql_database }}
+      run: |
+        safedb validate \
+          --db-type "${{ inputs.db_type }}" \
+          --migrations-path "${{ inputs.migrations_path }}" \
+          --ci \
+          $SAFEDB_STRICT_FLAG
