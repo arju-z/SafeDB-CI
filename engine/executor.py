@@ -1,7 +1,7 @@
 from typing import Iterable
 
-from engine.models import Migration
 from engine.adapters.base import DatabaseAdapter
+from engine.models import Migration
 
 
 def execute_migrations(

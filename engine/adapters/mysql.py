@@ -1,18 +1,11 @@
-"""
-    Unlike postgres, mysql commits DDL commands instantly
-    So even if the transaction fais, we have to manually
-    see where it went wrong
-"""
-
 import mysql.connector
 
-from engine.models import Migration
-from engine.errors import MigrationError
 from engine.adapters.base import DatabaseAdapter
+from engine.errors import MigrationError
+from engine.models import Migration
 
 
 class MySQLAdapter(DatabaseAdapter):
-    # Constructor initializes host(localhost), user, password, database(name)
     def __init__(self, host, user, password, database):
         self.config = {
             "host": host,
@@ -21,22 +14,37 @@ class MySQLAdapter(DatabaseAdapter):
             "database": database,
         }
 
-    # Overloading the base class function
     def execute_migrations(self, migrations):
-        conn = mysql.connector.connect(**self.config)
         try:
+            conn = mysql.connector.connect(**self.config)
+            conn.autocommit = False
             cursor = conn.cursor()
+
             for migration in migrations:
                 try:
-                    sql = migration.path.read_text(encoding="utf-8")
-                    cursor.execute(sql)
+                    sql_text = migration.path.read_text(
+                        encoding="utf-8"
+                    )
+                    cursor.execute(sql_text)
                     conn.commit()
+
                 except Exception as e:
                     conn.rollback()
                     raise MigrationError(
                         f"MySQL migration failed "
-                        f"(v{migration.version} - {migration.filename}): {str(e)}"
-                    )
+                        f"(v{migration.version} - "
+                        f"{migration.filename}): {str(e)}"
+                    ) from e
+
+        except Exception as connection_error:
+            raise MigrationError(
+                f"MySQL connection failure: "
+                f"{str(connection_error)}"
+            ) from connection_error
+
         finally:
-            cursor.close()
-            conn.close()
+            try:
+                cursor.close()
+                conn.close()
+            except Exception:
+                pass

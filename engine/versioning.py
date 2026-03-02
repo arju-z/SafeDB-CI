@@ -2,32 +2,30 @@ import re
 from pathlib import Path
 from typing import List
 
+from engine.errors import (DuplicateMigrationVersionError,
+                           EmptyMigrationSetError,
+                           InvalidMigrationFilenameError, MigrationError,
+                           NonSequentialMigrationVersionError)
 from engine.models import Migration
-from engine.errors import ( 
-    MigrationError,
-    NonSequentialMigrationVersionError,
-    InvalidMigrationFilenameError,
-    DuplicateMigrationVersionError,
-    EmptyMigrationSetError
-)
 
 _MIGRATION_PATTERN = re.compile(r"^(\d+)_.*\.sql$")
 
-def load_migrations(migration_dir : Path) -> List[Migration]:
+
+def load_migrations(migration_dir: Path) -> List[Migration]:
     """
-        Load, Validate and deterministically order migrations
+    Load, Validate and deterministically order migrations
 
-        ONLY FOR ENTERING MIGRATIONS!! DO NOT CHANGE!!
+    ONLY FOR ENTERING MIGRATIONS!! DO NOT CHANGE!!
 
-        :param migrations_dir: Path to directory containing SQL migrations
-        :return: Ordered list of Migration objects
-        :raises MigrationError: if any validation rule is violated
+    :param migrations_dir: Path to directory containing SQL migrations
+    :return: Ordered list of Migration objects
+    :raises MigrationError: if any validation rule is violated
     """
 
     if not migration_dir.exists() or not migration_dir.is_dir():
         raise EmptyMigrationSetError()
-    
-    migrations : List[Migration] = []
+
+    migrations: List[Migration] = []
 
     for entry in migration_dir.iterdir():
         if not entry.is_file():
@@ -38,17 +36,20 @@ def load_migrations(migration_dir : Path) -> List[Migration]:
         match = _MIGRATION_PATTERN.match(entry.name)
         if not match:
             raise InvalidMigrationFilenameError(entry.name)
-        
+
         version = int(match.group(1))
 
         migrations.append(
             Migration(
                 version=version,
                 filename=entry.name,
-                path = entry.resolve(),
+                path=entry.resolve(),
             )
         )
 
     if not migrations:
         raise EmptyMigrationSetError()
 
+    ordered = sorted(migrations, key=lambda m: m.version)
+
+    return ordered

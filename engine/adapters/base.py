@@ -1,8 +1,7 @@
 """
-    The tools evaluates the syntax and ordering of the migrations
-    but cannot override the DB engine semantics
+The tools evaluates the syntax and ordering of the migrations
+but cannot override the DB engine semantics
 """
-
 
 from abc import ABC, abstractmethod
 from typing import Iterable
