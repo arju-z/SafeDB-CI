@@ -42,7 +42,7 @@ jobs:
         uses: ./ 
         with:
           db_type: postgres
-          migrations_path: ./examples/broken_schema
+          migrations_path: ./examples/03_schema_integrity_fail
           strict_mode: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
           postgres_user: safedb
           postgres_password: safedbpass
