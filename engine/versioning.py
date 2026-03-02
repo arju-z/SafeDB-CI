@@ -52,4 +52,22 @@ def load_migrations(migration_dir: Path) -> List[Migration]:
 
     ordered = sorted(migrations, key=lambda m: m.version)
 
+    # Check for duplicate version numbers.
+    # WHY: Two files with the same numeric prefix (001_foo.sql and 001_bar.sql)
+    # represent an ambiguous ordering contract — we cannot know which applies first.
+    seen_versions: set[int] = set()
+    for m in ordered:
+        if m.version in seen_versions:
+            raise DuplicateMigrationVersionError(m.filename)
+        seen_versions.add(m.version)
+
+    # Check that versions form a consecutive sequence starting at 1.
+    # WHY: A gap (001, 002, 004) means 003 was deleted, renamed, or never committed.
+    # The production database may be in an state we cannot reason about.
+    # We refuse to apply migrations on top of an unknown base.
+    for i, m in enumerate(ordered):
+        expected = i + 1
+        if m.version != expected:
+            raise NonSequentialMigrationVersionError(expected, m.version)
+
     return ordered
