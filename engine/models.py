@@ -6,12 +6,13 @@
 from dataclasses import dataclass
 from pathlib import Path
 
+
 @dataclass(frozen=True)
 class Migration:
     """
-        Immutable data class for a single sql migration
+    Immutable data class for a single sql migration
     """
 
-    version : int
-    filename : str
-    path : Path
+    version: int
+    filename: str
+    path: Path

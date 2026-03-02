@@ -2,3 +2,6 @@ venv
 .notes
 __pycache__
 reports
+.env
+
+safedb_ci.egg-info
