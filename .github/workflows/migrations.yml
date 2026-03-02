@@ -38,8 +38,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run SafeDB-CI (strict)
-        uses: arju-z/SafeDB-CI@v1
+      - name: Run SafeDB-CI
+        uses: ./ 
         with:
           db_type: postgres
           migrations_path: ./migrations
