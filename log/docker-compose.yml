@@ -1,0 +1,56 @@
+# log/docker-compose.yml
+#
+# SafeDB-CI Observability Stack
+#
+# Components:
+#   loki      — Log aggregation backend (receives JSON from GitHub Actions)
+#   grafana   — Visualization (pre-provisioned with SafeDB-CI dashboard)
+#
+# Usage:
+#   cd log && docker compose up -d
+#   Open http://localhost:3000 (admin / safedb)
+#
+# GitHub Actions ships reports via curl to http://<your-host>:3100/loki/api/v1/push
+# See the workflow snippet below and the README for full setup instructions.
+
+services:
+
+  loki:
+    image: grafana/loki:2.9.7
+    container_name: safedb_loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -qO- http://localhost:3100/ready || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: safedb_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: safedb
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # Auto-load provisioned datasources and dashboards on startup.
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  loki_data:
+  grafana_data:
