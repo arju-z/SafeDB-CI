@@ -18,5 +18,5 @@ class DatabaseAdapter(ABC):
     """
 
     @abstractmethod
-    def execute_migrations(self, migrations: Iterable[Migration]) -> None:
+    def execute_migrations(self, migrations: Iterable[Migration], dry_run: bool = False) -> None:
         pass

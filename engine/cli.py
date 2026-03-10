@@ -7,6 +7,16 @@ from engine.adapters.mysql import MySQLAdapter
 from engine.adapters.postgres import PostgresAdapter
 from engine.errors import MigrationError
 from engine.executor import execute_migrations
+from engine.lockfile import check_tamper, load_lockfile, write_lockfile
+from engine.naming import NamingHeuristicError, run_naming_heuristics
+from engine.reporter import (
+    PhaseResult,
+    PhaseStatus,
+    PipelineReport,
+    emit_console_summary,
+    emit_github_summary,
+    emit_json,
+)
 from engine.safety import run_safety_check
 from engine.schema import introspect_schema, run_schema_validation
 from engine.versioning import load_migrations
@@ -223,6 +233,55 @@ def get_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # ── v2: Dry-run mode ────────────────────────────────────────────────────
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Dry-run mode. Validates migration SQL syntax against a real DB without\n"
+            "committing any state. Each migration is executed inside a transaction that\n"
+            "is explicitly rolled back at the end.\n"
+            "\n"
+            "Phases 4-6 (introspection, schema validation, lockfile) are skipped\n"
+            "because nothing was committed — the catalog is unchanged.\n"
+            "\n"
+            "⚠ PostgreSQL: full dry-run (all DDL is rolled back).\n"
+            "⚠ MySQL: partial dry-run only (DDL auto-commits implicitly)."
+        ),
+    )
+
+    # ── v2: Structured output ────────────────────────────────────────────────
+    parser.add_argument(
+        "--output",
+        type=str,
+        choices=["text", "json"],
+        default="text",
+        metavar="{text,json}",
+        help=(
+            "Output format.\n"
+            "  text  Human-readable console output (default).\n"
+            "  json  Emit a structured JSON report to report.json.\n"
+            "        Also writes a Markdown summary to $GITHUB_STEP_SUMMARY\n"
+            "        when running inside GitHub Actions."
+        ),
+    )
+
+    # ── v2: Lockfile path ────────────────────────────────────────────────────
+    parser.add_argument(
+        "--lockfile-path",
+        type=Path,
+        default=Path(".safedb-lock"),
+        metavar="PATH",
+        help=(
+            "Path to the migration lockfile (default: .safedb-lock).\n"
+            "The lockfile records the SHA-256 hash of each migration file after a\n"
+            "successful validation run. On subsequent runs, any change to a previously\n"
+            "validated file is treated as a hard error (TAMPER DETECTED).\n"
+            "\n"
+            "The lockfile should be committed to version control."
+        ),
+    )
+
     # ── PostgreSQL ──────────────────────────────────────────────────────────
     parser.add_argument(
         "--database-url",
@@ -409,84 +468,168 @@ def _build_inspection_connection(args: argparse.Namespace):
 
 def main():
     """
-    The main boundary layer between the operating system (CI system) 
-    and the migration engine. 
-    
-    WHY: Handles setup, delegates to business logic, and catches domain exceptions, 
-    mapping them securely to Unix exit codes without leaking python stack traces.
+    Main CLI entry point. Orchestrates the full SafeDB-CI pipeline.
+
+    v2 pipeline:
+      Phase 1   — Ordering (versioning.py)
+      Phase 1b  — Tamper check (lockfile.py)     [NEW v2]
+      Phase 2   — Safety scan (safety.py)
+      Phase 3   — Execution (executor.py)        [dry-run support NEW v2]
+      Phase 4   — Introspection (schema.py)      [skipped in dry-run]
+      Phase 5a  — Structural validation          [skipped in dry-run]
+      Phase 5b  — Naming heuristics (naming.py)  [NEW v2, skipped in dry-run]
+      Phase 6   — Lockfile write (lockfile.py)   [NEW v2, skipped in dry-run]
+      Output    — JSON report + GHA summary      [NEW v2]
     """
     parser = get_parser()
     args = parser.parse_args()
 
-    # 1. Config Resolution & Adapter Selection
-    # WHY: We establish the target database early so we can fail fast
-    # before wasting I/O cycles reading migration files.
+    # Initialise the pipeline report. Populated as phases complete.
+    # Emitted at the very end regardless of exit code.
+    report = PipelineReport(
+        db_type=args.db_type,
+        migrations_path=str(args.migrations_path),
+        dry_run=args.dry_run,
+    )
+
+    def _finish(exit_code: int) -> None:
+        """Emit the report and exit with the given code."""
+        report.exit_code = exit_code
+        if args.output == "json":
+            emit_json(report, Path("report.json"))
+            emit_console_summary(report)
+        emit_github_summary(report)
+        sys.exit(exit_code)
+
+    # Adapter setup — fail fast before any file I/O.
     adapter = validate_args_and_get_adapter(args)
 
-    # 2. Execution Initialization
-    # WHY: Load and validate local disk state. If files are missing or out of order,
-    # load_migrations raises a MigrationError which we catch strictly below.
     try:
         if not args.migrations_path.exists():
             print(f"ERROR: Migrations directory not found: {args.migrations_path}", file=sys.stderr)
             sys.exit(1)
 
+        # ── Phase 1: Ordering ──────────────────────────────────────────────────
         print(f"Loading migrations from {args.migrations_path}...")
         migrations = load_migrations(args.migrations_path)
         print(f"Successfully loaded {len(migrations)} migrations.")
+        report.ordering = PhaseResult(
+            status=PhaseStatus.PASS,
+            detail=f"{len(migrations)} migration(s) loaded",
+        )
 
-        # 3. Static Safety Check
-        # WHY: Run BEFORE execution. The CI DB is empty so a DROP TABLE will succeed
-        # there but destroy real data in production. We detect destructive intent here.
+        # ── Phase 1b: Tamper check ─────────────────────────────────────────────
+        lockfile_data = load_lockfile(args.lockfile_path)
+        if lockfile_data is not None:
+            tamper_violations = check_tamper(migrations, lockfile_data)
+            if tamper_violations:
+                report.tamper_check = PhaseResult(
+                    status=PhaseStatus.FAIL,
+                    detail=f"{len(tamper_violations)} tampered file(s)",
+                    extras={"violations": [
+                        {"file": v.filename, "rule": "Content changed",
+                         "detail": f"expected {v.expected_hash[:16]}... got {v.actual_hash[:16]}...",
+                         "severity": "HIGH"}
+                        for v in tamper_violations
+                    ]},
+                )
+                print("\nMIGRATION FAILED:\n", file=sys.stderr)
+                print("TAMPER DETECTED: The following migration files have been modified "
+                      "since last validation:", file=sys.stderr)
+                for v in tamper_violations:
+                    print(f"  ✗ {v.filename}", file=sys.stderr)
+                    print(f"      Expected: {v.expected_hash}", file=sys.stderr)
+                    print(f"      Actual:   {v.actual_hash}", file=sys.stderr)
+                print("\nEditing committed migrations corrupts database state history."
+                      " Write a new migration instead.", file=sys.stderr)
+                _finish(1)
+            else:
+                report.tamper_check = PhaseResult(
+                    status=PhaseStatus.PASS, detail="All hashes match"
+                )
+        else:
+            report.tamper_check = PhaseResult(
+                status=PhaseStatus.PASS, detail="No lockfile yet (first run)"
+            )
+
+        # ── Phase 2: Safety scan ───────────────────────────────────────────────
         print("Running safety analysis...")
         run_safety_check(migrations)
         print("Safety check passed.")
+        report.safety = PhaseResult(status=PhaseStatus.PASS)
 
-        # 4. Engine Pipeline Execution
-        print(f"Executing migrations against {args.db_type}...")
-        execute_migrations(migrations, adapter)
+        # ── Phase 3: Execution ─────────────────────────────────────────────────
+        if args.dry_run:
+            print(f"[DRY RUN] Validating migrations against {args.db_type} (changes will be rolled back)...")
+        else:
+            print(f"Executing migrations against {args.db_type}...")
+
+        execute_migrations(migrations, adapter, dry_run=args.dry_run)
+
+        if args.dry_run:
+            report.execution = PhaseResult(
+                status=PhaseStatus.PASS,
+                detail=f"{len(migrations)} migration(s) validated (dry run — rolled back)",
+            )
+            # Skip phases 4–6: nothing was committed, catalog is unchanged.
+            report.introspection = PhaseResult(status=PhaseStatus.SKIPPED, detail="dry-run mode")
+            report.structural_validation = PhaseResult(status=PhaseStatus.SKIPPED, detail="dry-run mode")
+            report.naming_heuristics = PhaseResult(status=PhaseStatus.SKIPPED, detail="dry-run mode")
+            report.lockfile = PhaseResult(status=PhaseStatus.SKIPPED, detail="dry-run mode")
+            print(f"\nDRY RUN COMPLETE: All {len(migrations)} migrations validated. No state committed.")
+            _finish(0)
+
         print(f"All {len(migrations)} migrations executed.")
+        report.execution = PhaseResult(
+            status=PhaseStatus.PASS,
+            detail=f"{len(migrations)} migration(s) applied",
+        )
 
-        # 5. Schema Introspection
-        # WHY AFTER EXECUTION: The schema only exists after migrations have been applied
-        # and committed. We open a fresh read connection to catalogue the live catalog state.
+        # ── Phase 4: Schema introspection ─────────────────────────────────────
         print("Introspecting post-migration schema...")
         inspection_conn = _build_inspection_connection(args)
         try:
             schema_snapshot = introspect_schema(args.db_type, inspection_conn)
         finally:
-            # Always close the inspection connection regardless of introspection outcome.
-            # WHY: Leaking connections in CI causes port exhaustion on repeated runs.
             inspection_conn.close()
         print(f"Schema introspection complete. Found {len(schema_snapshot.tables)} table(s).")
+        report.introspection = PhaseResult(
+            status=PhaseStatus.PASS,
+            detail=f"{len(schema_snapshot.tables)} table(s) found",
+        )
 
-        # 6. Structural Schema Validation
-        # WHY SEPARATE FROM EXECUTION: Execution only confirms SQL ran without error.
-        # This phase validates that the resulting relational structure is self-consistent
-        # (FK targets exist, references are unique columns, no duplicate constraints, etc.)
+        # ── Phase 5a: Structural schema validation ────────────────────────────
         print("Running structural schema validation...")
         run_schema_validation(schema_snapshot, strict=args.strict)
         print("Schema validation passed.")
+        report.structural_validation = PhaseResult(status=PhaseStatus.PASS)
+
+        # ── Phase 5b: Naming heuristics ───────────────────────────────────────
+        print("Running schema naming heuristics...")
+        run_naming_heuristics(schema_snapshot, strict=args.strict)
+        report.naming_heuristics = PhaseResult(status=PhaseStatus.PASS)
+
+        # ── Phase 6: Write lockfile ───────────────────────────────────────────
+        write_lockfile(migrations, args.lockfile_path)
+        report.lockfile = PhaseResult(
+            status=PhaseStatus.PASS,
+            detail=f"{len(migrations)} hashes recorded",
+        )
 
         print(f"\nSUCCESS: All {len(migrations)} migrations applied and schema integrity verified.")
-        sys.exit(0)
+        _finish(0)
 
-    except MigrationError as e:
-        # WHY Error Handling separation: This is our expected failure domain error. 
-        # (e.g., Syntax errors in SQL, missing sequence, DB connection dropped)
-        # We print only the error message, NOT the stack trace. 
-        # In CI, a stack trace is noise. The user needs to know *what* failed (e.g. Migration 002).
+    except (MigrationError, NamingHeuristicError) as e:
+        # Known domain failure — print message only, no stack trace.
         print(f"\nMIGRATION FAILED:\n{str(e)}", file=sys.stderr)
-        
-        # Explicitly exit 1 to trigger CI pipeline failure (red X in GitHub Actions)
-        sys.exit(1)
-        
+        # Mark the failing phase in the report based on which exception phase we're in.
+        # The report already has whichever phases completed; the rest remain PENDING.
+        _finish(1)
+
     except Exception as e:
-        # WHY Defensive Catch: Defensive programming. If an unforeseen error 
-        # (like an OS memory error, or stdlib failure) breaches our domain walls, 
-        # we catch it to ensure the CI pipeline still halts with a non-zero exit code.
+        # Defensive catch — unforeseen errors must still exit 1.
         print(f"\nCRITICAL UNHANDLED SYSTEM ERROR:\n{str(e)}", file=sys.stderr)
-        sys.exit(1)
+        _finish(1)
 
 
 if __name__ == "__main__":

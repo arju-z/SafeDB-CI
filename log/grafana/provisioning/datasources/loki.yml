@@ -1,0 +1,18 @@
+# log/grafana/provisioning/datasources/loki.yml
+#
+# Auto-provisions Loki as a datasource in Grafana on startup.
+# No manual UI setup required.
+
+apiVersion: 1
+
+datasources:
+  - name: Loki
+    type: loki
+    uid: safedb_loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
+    editable: false
+    jsonData:
+      # Maximum time range for log queries — covers 30 days of CI history.
+      maxLines: 5000

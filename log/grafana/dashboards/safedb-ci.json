@@ -1,0 +1,200 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "datasource", "id": "loki", "name": "Loki", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "SafeDB-CI migration validation results — phase-by-phase breakdown of every CI run.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "title": "Overview",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "safedb_loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "options": { "0": { "text": "PASS" }, "1": { "text": "FAIL" } }, "type": "value" }
+          ]
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "Last Run Result",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "safedb_loki" },
+          "expr": "{job=\"safedb-ci\"} | json | line_format \"{{.exit_code}}\"",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "safedb_loki" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": { "colorMode": "value", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["count"] } },
+      "title": "Total Runs",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "safedb_loki" },
+          "expr": "count_over_time({job=\"safedb-ci\"}[$__range])",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "loki", "uid": "safedb_loki" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "center", "orientation": "auto", "reduceOptions": { "calcs": ["count"] } },
+      "title": "Failed Runs",
+      "type": "stat",
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "safedb_loki" },
+          "expr": "count_over_time({job=\"safedb-ci\", exit_code=\"1\"}[$__range])",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "title": "Run History",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "safedb_loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 6 },
+      "id": 10,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": true,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "title": "Raw JSON Reports (latest first)",
+      "type": "logs",
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "safedb_loki" },
+          "expr": "{job=\"safedb-ci\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 },
+      "id": 102,
+      "title": "Phase Breakdown",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "loki", "uid": "safedb_loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 17 },
+      "id": 20,
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showTime": true,
+        "sortOrder": "Descending"
+      },
+      "title": "Failed Phase Details",
+      "type": "logs",
+      "targets": [
+        {
+          "datasource": { "type": "loki", "uid": "safedb_loki" },
+          "expr": "{job=\"safedb-ci\", exit_code=\"1\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["safedb", "migrations", "ci"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "loki", "uid": "safedb_loki" },
+        "definition": "label_values({job=\"safedb-ci\"}, repo)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": false,
+        "name": "repo",
+        "query": "label_values({job=\"safedb-ci\"}, repo)",
+        "refresh": 2,
+        "sort": 1,
+        "label": "Repository",
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "loki", "uid": "safedb_loki" },
+        "definition": "label_values({job=\"safedb-ci\"}, branch)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": false,
+        "name": "branch",
+        "query": "label_values({job=\"safedb-ci\"}, branch)",
+        "refresh": 2,
+        "sort": 1,
+        "label": "Branch",
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-7d", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "SafeDB-CI Migration Reports",
+  "uid": "safedb-ci-v2",
+  "version": 1
+}
