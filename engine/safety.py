@@ -153,32 +153,54 @@ _RULES: List[tuple] = [
 ]
 
 
+"""
+SAFETY OVERRIDE ANNOTATION — safedb:allow
+==========================================
+A destructive statement can be explicitly approved by a reviewer using the
+`-- safedb:allow` annotation. This must appear either:
+
+  - INLINE on the same line as the dangerous statement:
+      DROP TABLE legacy_import_cache; -- safedb:allow
+
+  - OR on the IMMEDIATELY PRECEDING LINE:
+      -- safedb:allow
+      DROP TABLE legacy_import_cache;
+
+The annotation causes the line (and any immediately preceded line match) to
+be stripped from safety scanning. A log message is emitted so the bypass is
+permanently visible in CI output — it cannot be silent.
+
+WHY NOT A GLOBAL FILE OVERRIDE:
+A file-level `-- safedb:allow-file` would let a single annotation skip all
+scanning in a file, making it easy to accidentally suppress unintended patterns.
+Line-level annotations are deliberately narrow: each risky statement must be
+individually and explicitly reviewed.
+"""
+
+# The marker string (lowercase for case-insensitive matching)
+_ALLOW_MARKER = "safedb:allow"
+
+
+def _is_allowed(line: str) -> bool:
+    """Return True if the line carries a safedb:allow annotation."""
+    return _ALLOW_MARKER in line.lower()
+
+
 def _normalize_sql(sql: str) -> str:
     """
     Normalizes raw SQL text before scanning.
 
-    WHY NORMALIZE:
-    - Strip out single-line comments (-- ...) to avoid false positives from
-      commented-out SQL, like our own inline documentation.
-    - Strip block comments (/* ... */) for the same reason.
-    - Collapse duplicate whitespace to make regex matching more predictable.
-    - We do NOT lowercase here because some rules need to preserve line structure
-      for MULTILINE anchors on real content.
-
-    WHY NOT REMOVE ALL COMMENTS:
-    We only remove -- and /* */ style comments. String literals that happen to
-    contain comment-like characters inside actual SQL VALUES are rare in migrations
-    and acceptable as a known edge case.
+    This version ONLY strips block comments (/* ... */) and normalizes whitespace.
+    Single-line (-- ...) comments are NOT stripped here because the allow-marker
+    check must happen before normalization. Individual -- lines irrelevant to
+    safety scanning are excluded by analyze_migration's line filter before this
+    function is called.
     """
-    # Remove single-line comments (-- to end-of-line)
-    sql = re.sub(r"--[^\n]*", "", sql)
-
     # Remove block comments (/* ... */)
-    # re.DOTALL ensures '.' also matches newlines inside block comments
     sql = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
 
-    # Normalize repeated whitespace (tabs, newlines, extra spaces) into single spaces
-    # This prevents patterns like "DROP\nTABLE" from slipping through
+    # Normalize repeated whitespace into single spaces.
+    # This prevents patterns like "DROP\nTABLE" from escaping detection.
     sql = re.sub(r"\s+", " ", sql)
 
     return sql.strip()
@@ -190,26 +212,77 @@ def analyze_migration(filename: str, sql: str) -> List[SafetyViolation]:
 
     Returns a list of SafetyViolation objects. An empty list means clean.
 
-    WHY A LIST (not a single raise): A single migration may have multiple violations.
-    We want to report ALL of them at once so the developer can fix everything in one
-    pass, rather than discovering them one-by-one as the scanner halts.
+    ALLOW ANNOTATION LOGIC:
+    Before normalization, we scan the raw SQL line-by-line.
+    Any line tagged with `-- safedb:allow` (inline or as the PRECEDING line)
+    is removed from the text that goes to the regex scanner.
+    A printed log message ensures the bypass is always auditable in CI.
+
+    WHY LINE-BY-LINE (not whole-file regex):
+    A whole-file approach lets one annotation silence a whole block.
+    Per-line resolution means each dangerous statement needs its own explicit
+    acknowledgement — intentional friction that encourages careful review.
 
     Args:
         filename: The migration filename (for error reporting only, not I/O).
         sql:      The raw SQL file text to analyze.
     """
     violations: List[SafetyViolation] = []
+    allowed_lines: List[int] = []  # 0-indexed line numbers exempt from scanning
 
-    # Normalize first to avoid comment-based bypasses and whitespace tricks
-    normalized = _normalize_sql(sql)
+    raw_lines = sql.splitlines()
+
+    # --- Pass 1: Identify lines to exclude -----------------------------------
+    #
+    # We build a set of line indices that carry or are preceded by safedb:allow.
+    # These lines will be blanked out before the SQL is re-joined and normalized.
+    for i, line in enumerate(raw_lines):
+        if _is_allowed(line):
+            # The annotation line itself
+            allowed_lines.append(i)
+            # If this is a pure annotation line (no SQL), the NEXT line is the
+            # statement it covers. Check if the next line is not itself annotated.
+            stripped = line.strip().lower()
+            is_pure_annotation = stripped == "-- safedb:allow" or stripped.startswith("-- safedb:allow")
+            if is_pure_annotation and i + 1 < len(raw_lines):
+                allowed_lines.append(i + 1)
+                print(
+                    f"  [SAFETY OVERRIDE] {filename}:{i + 2}: safedb:allow — reviewer override "
+                    f"accepted for: {raw_lines[i + 1].strip()!r}"
+                )
+            else:
+                # Inline annotation: the annotation IS on the dangerous line.
+                print(
+                    f"  [SAFETY OVERRIDE] {filename}:{i + 1}: safedb:allow — reviewer override "
+                    f"accepted for: {line.strip()!r}"
+                )
+
+    # --- Pass 2: Blank out allowed lines -------------------------------------
+    #
+    # Replace allowed lines with empty strings so they don't feed the scanner,
+    # but preserve the line count so error positions stay correct if we ever
+    # add line-number reporting to violations.
+    filtered_lines = [
+        "" if i in allowed_lines else line
+        for i, line in enumerate(raw_lines)
+    ]
+
+    # Also strip remaining pure comment lines (no safedb:allow) before
+    # passing to the normalizer — avoids false positives from commented SQL.
+    filtered_lines = [
+        re.sub(r"--[^\n]*", "", line)
+        for line in filtered_lines
+    ]
+
+    filtered_sql = "\n".join(filtered_lines)
+
+    # --- Pass 3: Normalize and scan ------------------------------------------
+    normalized = _normalize_sql(filtered_sql)
 
     for rule_name, pattern, severity in _RULES:
         matches = pattern.finditer(normalized)
 
         for match in matches:
-            # Extract a short window around the match for readable context
-            # We pull 60 characters on either side of the matched position
-            # WHY: Showing the full normalized SQL per match would be extremely verbose
             start = max(0, match.start() - 30)
             end = min(len(normalized), match.end() + 30)
             context_snippet = normalized[start:end].strip()
