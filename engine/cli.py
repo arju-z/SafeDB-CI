@@ -3,6 +3,8 @@ import os
 import sys
 from pathlib import Path
 
+from rich.console import Console
+
 from engine.adapters.mysql import MySQLAdapter
 from engine.adapters.postgres import PostgresAdapter
 from engine.errors import MigrationError
@@ -21,6 +23,19 @@ from engine.safety import run_safety_check
 from engine.schema import introspect_schema, run_schema_validation
 from engine.versioning import load_migrations
 
+console = Console()
+
+def print_banner():
+    banner = r"""
+   _____        __      ____  ____   ____ ___ 
+  / ___/____ _ / /___  / __ \/ __ ) / __ <  /
+  \__ \/ __ `// // _ \/ / / / __  |/ / / / / 
+ ___/ / /_/ // //  __/ /_/ / /_/ // /_/ / /  
+/____/\__,_//_/ \___/_____/_____(_)____/_/   
+    """
+    console.print(banner, style="bold cyan")
+    console.print("SafeDB-CI — Migration Validator\n", style="bold")
+
 
 def get_parser() -> argparse.ArgumentParser:
     """
@@ -32,120 +47,7 @@ def get_parser() -> argparse.ArgumentParser:
     # allowing us to write a rich, human-readable help body without argparse collapsing it.
     parser = argparse.ArgumentParser(
         prog="safedb",
-        description=(
-            "SafeDB-CI — Production Database Migration Validator\n"
-            "====================================================\n"
-            "\n"
-            "Validates SQL migration files against a live database before production deploy.\n"
-            "Performs three safety checks in sequence:\n"
-            "\n"
-            "  1. ORDERING CHECK  — Ensures migrations are numbered sequentially with no gaps\n"
-            "                       or duplicate version numbers (e.g. 001_, 002_, 003_).\n"
-            "\n"
-            "  2. SAFETY ANALYSIS — Statically scans SQL text for destructive operations\n"
-            "                       (DROP TABLE, TRUNCATE, DELETE without WHERE, CASCADE, etc.)\n"
-            "                       BEFORE any SQL is executed. Blocks HIGH severity violations.\n"
-            "                       Warns on MEDIUM severity (ALTER COLUMN TYPE, SET NOT NULL).\n"
-            "\n"
-            "  3. EXECUTION CHECK — Applies each migration inside an individual transaction\n"
-            "                       against a real ephemeral database. Catches syntax errors,\n"
-            "                       constraint violations, and type mismatches at runtime.\n"
-            "                       PostgreSQL fully rolls back on failure (DDL is transactional).\n"
-            "                       MySQL issues an implicit DDL commit — rollback is NOT\n"
-            "                       guaranteed for schema changes; see --db-type=mysql notes.\n"
-        ),
-        epilog=(
-            "────────────────────────────────────────────────────────────────\n"
-            "EXIT CODES\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "  0   All checks passed. Migrations are safe to deploy.\n"
-            "  1   One or more checks failed. Do NOT deploy. See stderr for details.\n"
-            "\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "MIGRATION FILE NAMING CONVENTION\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "  Files must follow the exact pattern:  NNN_description.sql\n"
-            "  Examples:  001_create_users.sql\n"
-            "             002_add_email_index.sql\n"
-            "             003_drop_legacy_table.sql   ← will be BLOCKED by safety check\n"
-            "\n"
-            "  Rules enforced:\n"
-            "    - Version number must start at 001 and increment by 1.\n"
-            "    - No duplicate version numbers permitted.\n"
-            "    - No gaps in the sequence (001, 002, 004 will fail).\n"
-            "    - Any .sql file not matching the pattern causes an immediate error.\n"
-            "\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "USAGE EXAMPLES\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "\n"
-            "  # Local validation against PostgreSQL:\n"
-            "  safedb validate \\\n"
-            "    --db-type postgres \\\n"
-            "    --migrations-path ./migrations \\\n"
-            "    --database-url \"postgresql://user:pass@127.0.0.1:5432/mydb\"\n"
-            "\n"
-            "  # Local validation against MySQL:\n"
-            "  safedb validate \\\n"
-            "    --db-type mysql \\\n"
-            "    --migrations-path ./migrations \\\n"
-            "    --mysql-host 127.0.0.1 \\\n"
-            "    --mysql-user myuser \\\n"
-            "    --mysql-password mypass \\\n"
-            "    --mysql-database mydb\n"
-            "\n"
-            "  # CI mode (credentials from environment variables):\n"
-            "  export POSTGRES_USER=myuser\n"
-            "  export POSTGRES_PASSWORD=mypass\n"
-            "  export POSTGRES_DB=mydb\n"
-            "  safedb validate \\\n"
-            "    --db-type postgres \\\n"
-            "    --ci \\\n"
-            "    --migrations-path ./migrations\n"
-            "\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "SAFETY RULES REFERENCE\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "\n"
-            "  HIGH severity  →  Blocks execution immediately. Fix before merging.\n"
-            "  ┌─────────────────────────────┬───────────────────────────────────────┐\n"
-            "  │ Rule                        │ Why it is dangerous                   │\n"
-            "  ├─────────────────────────────┼───────────────────────────────────────┤\n"
-            "  │ DROP TABLE                  │ Irrecoverable data loss               │\n"
-            "  │ DROP COLUMN                 │ Permanent column and data removal     │\n"
-            "  │ TRUNCATE                    │ Deletes all rows, no transaction log  │\n"
-            "  │ ALTER TABLE … DROP          │ Drops column without COLUMN keyword   │\n"
-            "  │ CASCADE                     │ Silently deletes child FK rows        │\n"
-            "  │ DELETE FROM <t> (no WHERE)  │ Full-table wipe, unrecoverable        │\n"
-            "  └─────────────────────────────┴───────────────────────────────────────┘\n"
-            "\n"
-            "  MEDIUM severity  →  Warning printed. Execution continues.\n"
-            "  ┌─────────────────────────────┬───────────────────────────────────────┐\n"
-            "  │ Rule                        │ Why it warrants review                │\n"
-            "  ├─────────────────────────────┼───────────────────────────────────────┤\n"
-            "  │ ALTER COLUMN TYPE           │ May silently truncate data on cast    │\n"
-            "  │ SET NOT NULL                │ Fails in prod if NULLs exist in table │\n"
-            "  └─────────────────────────────┴───────────────────────────────────────┘\n"
-            "\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "POSTGRESQL NOTES\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "  DDL statements (CREATE TABLE, ALTER TABLE) are fully transactional\n"
-            "  in PostgreSQL. A failed migration is completely rolled back, leaving\n"
-            "  the database in the exact state it was in before execution began.\n"
-            "\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "MYSQL NOTES  ⚠\n"
-            "────────────────────────────────────────────────────────────────\n"
-            "  MySQL issues an implicit COMMIT before and after every DDL statement.\n"
-            "  This means a failed migration containing DDL CANNOT be fully rolled back.\n"
-            "  Any CREATE TABLE, ALTER TABLE, or DROP TABLE that executed before the\n"
-            "  failure point will be permanently committed.\n"
-            "\n"
-            "  Mitigation: Write exactly ONE DDL statement per migration file.\n"
-            "  The InnoDB engine must be used (ENGINE=InnoDB). MyISAM has no transactions.\n"
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="SafeDB-CI — Production Database Migration Validator",
     )
 
     # Positional 'command' argument — enables 'safedb validate ...' syntax.
@@ -155,10 +57,7 @@ def get_parser() -> argparse.ArgumentParser:
         "command",
         choices=["validate"],
         metavar="command",
-        help=(
-            "The operation to perform.\n"
-            "  validate  Run ordering, safety, and execution checks on migrations."
-        ),
+        help="The operation to perform (e.g., validate)",
     )
 
     parser.add_argument(
@@ -167,11 +66,7 @@ def get_parser() -> argparse.ArgumentParser:
         choices=["postgres", "mysql"],
         required=True,
         metavar="{postgres,mysql}",
-        help=(
-            "Target database engine. Required.\n"
-            "  postgres  PostgreSQL 12+ (full DDL transaction support).\n"
-            "  mysql     MySQL 8+ with InnoDB (DDL is NOT transactional — see notes above)."
-        ),
+        help="Target database engine (postgres or mysql)",
     )
 
     parser.add_argument(
@@ -179,75 +74,26 @@ def get_parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         metavar="PATH",
-        help=(
-            "Path to the directory containing SQL migration files. Required.\n"
-            "Files must be named NNN_description.sql (e.g. 001_create_users.sql).\n"
-            "Migrations are loaded and ordered by their numeric prefix.\n"
-            "Gaps or duplicate version numbers will cause an immediate validation error."
-        ),
+        help="Path to the directory containing SQL migration files",
     )
 
     parser.add_argument(
         "--ci",
         action="store_true",
-        help=(
-            "Enable CI mode. When set, database credentials are automatically read\n"
-            "from environment variables instead of requiring explicit CLI arguments.\n"
-            "Manual arguments (e.g. --database-url) take precedence if also provided.\n"
-            "\n"
-            "  PostgreSQL CI env vars:\n"
-            "    POSTGRES_USER      Database username\n"
-            "    POSTGRES_PASSWORD  Database password\n"
-            "    POSTGRES_DB        Database name\n"
-            "    Host is fixed to 127.0.0.1, port to 5432.\n"
-            "\n"
-            "  MySQL CI env vars:\n"
-            "    MYSQL_USER         Database username\n"
-            "    MYSQL_PASSWORD     Database password\n"
-            "    MYSQL_DATABASE     Database name\n"
-            "    Host is fixed to 127.0.0.1, port to 3306.\n"
-            "\n"
-            "Intended for use with GitHub Actions 'services:' containers where the\n"
-            "database is spun up by the CI runner and available at 127.0.0.1."
-        ),
+        help="Enable CI mode (reads DB credentials from environment variables)",
     )
 
     parser.add_argument(
         "--strict",
         action="store_true",
-        help=(
-            "Strict mode. When set, MEDIUM severity schema anomalies are treated as\n"
-            "hard failures (exit 1) instead of warnings (exit 0).\n"
-            "\n"
-            "When NOT set (default):\n"
-            "  - HIGH severity violations → always block (exit 1).\n"
-            "  - MEDIUM severity violations → printed as warnings, exit 0.\n"
-            "\n"
-            "When set:\n"
-            "  - HIGH severity violations → block (exit 1).\n"
-            "  - MEDIUM severity violations → also block (exit 1).\n"
-            "\n"
-            "Use this flag in production deployment pipelines where any structural\n"
-            "warning (missing PK, duplicate FK) must be resolved before deploy.\n"
-            "Leave it off in development branches to allow iterative migration work."
-        ),
+        help="Treat MEDIUM severity schema anomalies as hard failures (exit 1)",
     )
 
     # ── v2: Dry-run mode ────────────────────────────────────────────────────
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help=(
-            "Dry-run mode. Validates migration SQL syntax against a real DB without\n"
-            "committing any state. Each migration is executed inside a transaction that\n"
-            "is explicitly rolled back at the end.\n"
-            "\n"
-            "Phases 4-6 (introspection, schema validation, lockfile) are skipped\n"
-            "because nothing was committed — the catalog is unchanged.\n"
-            "\n"
-            "⚠ PostgreSQL: full dry-run (all DDL is rolled back).\n"
-            "⚠ MySQL: partial dry-run only (DDL auto-commits implicitly)."
-        ),
+        help="Validates syntax without committing state (rolls back transactions)",
     )
 
     # ── v2: Structured output ────────────────────────────────────────────────
@@ -257,13 +103,7 @@ def get_parser() -> argparse.ArgumentParser:
         choices=["text", "json"],
         default="text",
         metavar="{text,json}",
-        help=(
-            "Output format.\n"
-            "  text  Human-readable console output (default).\n"
-            "  json  Emit a structured JSON report to report.json.\n"
-            "        Also writes a Markdown summary to $GITHUB_STEP_SUMMARY\n"
-            "        when running inside GitHub Actions."
-        ),
+        help="Output format: text (console) or json (file + GitHub summary)",
     )
 
     # ── v2: Lockfile path ────────────────────────────────────────────────────
@@ -272,14 +112,7 @@ def get_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(".safedb-lock"),
         metavar="PATH",
-        help=(
-            "Path to the migration lockfile (default: .safedb-lock).\n"
-            "The lockfile records the SHA-256 hash of each migration file after a\n"
-            "successful validation run. On subsequent runs, any change to a previously\n"
-            "validated file is treated as a hard error (TAMPER DETECTED).\n"
-            "\n"
-            "The lockfile should be committed to version control."
-        ),
+        help="Path to the migration lockfile (default: .safedb-lock)",
     )
 
     # ── PostgreSQL ──────────────────────────────────────────────────────────
@@ -287,16 +120,7 @@ def get_parser() -> argparse.ArgumentParser:
         "--database-url",
         type=str,
         metavar="URL",
-        help=(
-            "[PostgreSQL only] Full connection URL. Required when --db-type=postgres\n"
-            "and --ci is NOT active. Ignored when --db-type=mysql.\n"
-            "\n"
-            "Format:  postgresql://USER:PASSWORD@HOST:PORT/DBNAME\n"
-            "Example: postgresql://safedb:secret@127.0.0.1:5432/myapp_test\n"
-            "\n"
-            "When --ci is also provided, this argument overrides the auto-constructed\n"
-            "URL from environment variables, allowing manual override during debugging."
-        ),
+        help="[PostgreSQL only] Full connection URL",
     )
 
     # ── MySQL ───────────────────────────────────────────────────────────────
@@ -304,47 +128,25 @@ def get_parser() -> argparse.ArgumentParser:
         "--mysql-host",
         type=str,
         metavar="HOST",
-        help=(
-            "[MySQL only] Hostname or IP address of the MySQL server.\n"
-            "Required when --db-type=mysql and --ci is NOT active.\n"
-            "When --ci is active, defaults to 127.0.0.1 if not specified.\n"
-            "\n"
-            "Example: --mysql-host 127.0.0.1"
-        ),
+        help="[MySQL only] Database host address",
     )
     parser.add_argument(
         "--mysql-user",
         type=str,
         metavar="USER",
-        help=(
-            "[MySQL only] Username for MySQL authentication.\n"
-            "Required when --db-type=mysql and --ci is NOT active.\n"
-            "When --ci is active, falls back to the MYSQL_USER environment variable."
-        ),
+        help="[MySQL only] Database username",
     )
     parser.add_argument(
         "--mysql-password",
         type=str,
         metavar="PASSWORD",
-        help=(
-            "[MySQL only] Password for MySQL authentication.\n"
-            "Required when --db-type=mysql and --ci is NOT active.\n"
-            "When --ci is active, falls back to the MYSQL_PASSWORD environment variable.\n"
-            "\n"
-            "Security note: Passing passwords as CLI arguments may expose them in shell\n"
-            "history and process listings. Prefer --ci mode with environment variables\n"
-            "in any automated or shared environment."
-        ),
+        help="[MySQL only] Database password",
     )
     parser.add_argument(
         "--mysql-database",
         type=str,
         metavar="DATABASE",
-        help=(
-            "[MySQL only] Name of the target MySQL database.\n"
-            "Required when --db-type=mysql and --ci is NOT active.\n"
-            "When --ci is active, falls back to the MYSQL_DATABASE environment variable."
-        ),
+        help="[MySQL only] Target database name",
     )
 
     return parser
@@ -481,6 +283,7 @@ def main():
       Phase 6   — Lockfile write (lockfile.py)   [NEW v2, skipped in dry-run]
       Output    — JSON report + GHA summary      [NEW v2]
     """
+    print_banner()
     parser = get_parser()
     args = parser.parse_args()
 

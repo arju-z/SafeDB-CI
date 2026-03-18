@@ -204,10 +204,9 @@ def run_pipeline(args):
 
 # ENTRY
 def main():
+    print_banner()
     parser = get_parser()
     args = parser.parse_args()
-
-    print_banner()
 
     try:
         run_pipeline(args)
