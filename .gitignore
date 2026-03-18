@@ -5,3 +5,12 @@ reports
 .env
 
 safedb_ci.egg-info
+diagrams
+*.tex
+*.aux
+*.lof
+*.lot
+*.out
+*.toc
+*.log
+fix_tex.py
