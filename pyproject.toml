@@ -16,6 +16,7 @@ license = { text = "MIT" }
 dependencies = [
     "psycopg[binary]>=3.1",
     "mysql-connector-python>=8.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
